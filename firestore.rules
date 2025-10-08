@@ -1,0 +1,413 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* ---------- Helper Functions ---------- */
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    /* ---------- Tourist Profile (top-level) ---------- */
+    function allowedProfileKeys() {
+      return [
+        'uid',
+        'fullName',
+        'email',
+        'phoneNumber',
+        'nationality',
+        'passportNumber',
+        'emergencyContact',
+        'emergencyPhone',
+        'digitalTouristID',
+        'digitalIDHash',
+        'digitalIDValidUntil',
+        'lastLoginDate',
+        'registrationDate',
+        'isActive',
+        'createdAt',
+        'updatedAt',
+        'avatarUrl',       // NEW
+        'currentTripId'    // NEW
+      ];
+    }
+
+    function mutableUserFields() {
+      return [
+        'fullName',
+        'phoneNumber',
+        'nationality',
+        'emergencyContact',
+        'emergencyPhone',
+        'lastLoginDate',
+        'updatedAt',
+        'avatarUrl',       // NEW
+        'currentTripId'    // NEW
+      ];
+    }
+
+    function onlyAllowedKeys() {
+      return request.resource.data.keys().hasOnly(allowedProfileKeys());
+    }
+
+    function immutableUnchanged() {
+      return (
+        request.resource.data.uid == resource.data.uid &&
+        request.resource.data.email == resource.data.email &&
+        request.resource.data.digitalTouristID == resource.data.digitalTouristID &&
+        request.resource.data.digitalIDHash == resource.data.digitalIDHash &&
+        request.resource.data.digitalIDValidUntil == resource.data.digitalIDValidUntil &&
+        request.resource.data.registrationDate == resource.data.registrationDate &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.passportNumber == resource.data.passportNumber
+      );
+    }
+
+    function onlyMutableChanged() {
+      return request.resource.data
+        .diff(resource.data)
+        .changedKeys()
+        .hasOnly(mutableUserFields());
+    }
+
+    /* ---------- Verification Helpers ---------- */
+    function allowedVerificationKeys() {
+      return ['selectedMethods', 'passport', 'aadhaar', 'lastUpdated'];
+    }
+
+    function validSelectedMethods() {
+      return (
+        !('selectedMethods' in request.resource.data) ||
+        (
+          request.resource.data.selectedMethods is list &&
+          request.resource.data.selectedMethods.size() <= 2 &&
+          (
+            request.resource.data.selectedMethods.size() == 0 ||
+            (
+              request.resource.data.selectedMethods.size() == 1 &&
+              (
+                request.resource.data.selectedMethods[0] == 'passport' ||
+                request.resource.data.selectedMethods[0] == 'aadhaar'
+              )
+            ) ||
+            (
+              request.resource.data.selectedMethods.size() == 2 &&
+              (
+                request.resource.data.selectedMethods[0] == 'passport' ||
+                request.resource.data.selectedMethods[0] == 'aadhaar'
+              ) &&
+              (
+                request.resource.data.selectedMethods[1] == 'passport' ||
+                request.resource.data.selectedMethods[1] == 'aadhaar'
+              ) &&
+              request.resource.data.selectedMethods[0] != request.resource.data.selectedMethods[1]
+            )
+          )
+        )
+      );
+    }
+
+    function validPassportMap(m) {
+      return (
+        m.keys().hasOnly(['number','verified']) &&
+        (!('number' in m) || (m.number is string)) &&
+        (!('verified' in m) || (m.verified is bool))
+      );
+    }
+
+    function validAadhaarMap(m) {
+      return (
+        m.keys().hasOnly(['number','verified']) &&
+        (!('number' in m) || (m.number is string)) &&
+        (!('verified' in m) || (m.verified is bool))
+      );
+    }
+
+    function validVerificationShape() {
+      return (
+        request.resource.data.keys().hasOnly(allowedVerificationKeys()) &&
+        validSelectedMethods() &&
+        (!('passport' in request.resource.data) || (request.resource.data.passport is map && validPassportMap(request.resource.data.passport))) &&
+        (!('aadhaar' in request.resource.data) || (request.resource.data.aadhaar is map && validAadhaarMap(request.resource.data.aadhaar))) &&
+        (!('lastUpdated' in request.resource.data) || (request.resource.data.lastUpdated is timestamp))
+      );
+    }
+
+    /* ---------- Trip Helpers (NEW) ---------- */
+    function allowedTripKeys() {
+      return [
+        'tripName',
+        'startDate',
+        'endDate',
+        'purpose',
+        'travelMode',
+        'status',
+        'autoStatus',
+        'from',
+        'to',
+        'halts',
+        'encodedPolyline',
+        'distanceKm',
+        'durationMinutes',
+        'notes',
+        'checklist',
+        'budget',
+        'emergencyContacts',
+        'shareLiveLocation',
+        'createdAt',
+        'updatedAt',
+        'archived'
+      ];
+    }
+
+    function validLocation(loc) {
+      return (
+        loc is map &&
+        ('lat' in loc) && (loc.lat is number) &&
+        ('lng' in loc) && (loc.lng is number) &&
+        (!('address' in loc) || (loc.address is string))
+      );
+    }
+
+    function validHalts() {
+      return (
+        !('halts' in request.resource.data) ||
+        (
+          request.resource.data.halts is list &&
+          request.resource.data.halts.size() <= 15 &&
+          request.resource.data.halts.all(h => validLocation(h))
+        )
+      );
+    }
+
+    function validChecklist() {
+      return (
+        !('checklist' in request.resource.data) ||
+        (
+          request.resource.data.checklist is map &&
+          request.resource.data.checklist.keys().hasOnly([
+            'weatherChecked',
+            'emergencyNumbersSaved',
+            'offlineMapsReady',
+            'medKitPacked',
+            'powerBankCharged'
+          ]) &&
+          (!('weatherChecked' in request.resource.data.checklist) || request.resource.data.checklist.weatherChecked is bool) &&
+          (!('emergencyNumbersSaved' in request.resource.data.checklist) || request.resource.data.checklist.emergencyNumbersSaved is bool) &&
+          (!('offlineMapsReady' in request.resource.data.checklist) || request.resource.data.checklist.offlineMapsReady is bool) &&
+          (!('medKitPacked' in request.resource.data.checklist) || request.resource.data.checklist.medKitPacked is bool) &&
+          (!('powerBankCharged' in request.resource.data.checklist) || request.resource.data.checklist.powerBankCharged is bool)
+        )
+      );
+    }
+
+    function validBudget() {
+      return (
+        !('budget' in request.resource.data) ||
+        (
+          request.resource.data.budget is map &&
+          request.resource.data.budget.keys().hasOnly(['estimated','spent','currency']) &&
+          (!('estimated' in request.resource.data.budget) || request.resource.data.budget.estimated is number) &&
+          (!('spent' in request.resource.data.budget) || request.resource.data.budget.spent is number) &&
+          (!('currency' in request.resource.data.budget) || request.resource.data.budget.currency is string)
+        )
+      );
+    }
+
+    function validEmergencyContacts() {
+      return (
+        !('emergencyContacts' in request.resource.data) ||
+        (
+          request.resource.data.emergencyContacts is list &&
+          request.resource.data.emergencyContacts.size() <= 5 &&
+          request.resource.data.emergencyContacts.all(c =>
+            c is map &&
+            ('phone' in c) && (c.phone is string) &&
+            (!('label' in c) || (c.label is string))
+          )
+        )
+      );
+    }
+
+    function tripBaseShape() {
+      return (
+        request.resource.data.keys().hasOnly(allowedTripKeys()) &&
+        request.resource.data.tripName is string &&
+        request.resource.data.purpose is string &&
+        request.resource.data.travelMode is string &&
+        request.resource.data.status is string &&
+        (!('autoStatus' in request.resource.data) || request.resource.data.autoStatus is string) &&
+        validLocation(request.resource.data.from) &&
+        validLocation(request.resource.data.to) &&
+        validHalts() &&
+        (!('encodedPolyline' in request.resource.data) || request.resource.data.encodedPolyline is string) &&
+        (!('distanceKm' in request.resource.data) || request.resource.data.distanceKm is number) &&
+        (!('durationMinutes' in request.resource.data) || request.resource.data.durationMinutes is number) &&
+        (!('notes' in request.resource.data) || request.resource.data.notes is string) &&
+        validChecklist() &&
+        validBudget() &&
+        validEmergencyContacts() &&
+        (!('shareLiveLocation' in request.resource.data) || request.resource.data.shareLiveLocation is bool) &&
+        (!('archived' in request.resource.data) || request.resource.data.archived is bool) &&
+        (!('startDate' in request.resource.data) || request.resource.data.startDate is string) &&
+        (!('endDate' in request.resource.data) || request.resource.data.endDate is string)
+      );
+    }
+
+    function tripCreateValid() {
+      return (
+        tripBaseShape() &&
+        request.resource.data.createdAt is timestamp &&
+        request.resource.data.updatedAt is timestamp
+      );
+    }
+
+    function tripUpdateValid() {
+      return (
+        tripBaseShape() &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.updatedAt is timestamp
+      );
+    }
+
+    /* ---------- Tourists Collection Rules ---------- */
+    match /tourists/{uid} {
+
+      allow create: if isOwner(uid)
+        && !exists(/databases/$(database)/documents/tourists/$(uid))
+        && onlyAllowedKeys()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email is string
+        && request.resource.data.fullName is string
+        && request.resource.data.digitalTouristID is string
+        && request.resource.data.digitalIDHash is string
+        && request.resource.data.digitalIDValidUntil is string
+        && request.resource.data.registrationDate is string;
+
+      allow get: if isOwner(uid) || isAdmin();
+      allow list: if isAdmin() || isOwner(uid);
+
+      allow update: if (isOwner(uid) || isAdmin())
+        && onlyAllowedKeys()
+        && immutableUnchanged()
+        && onlyMutableChanged();
+
+      allow delete: if isAdmin();
+
+      /* ----- Subcollection: trips (NEW) ----- */
+      match /trips/{tripId} {
+        allow create: if isOwner(uid) && tripCreateValid();
+        allow get: if isOwner(uid) || isAdmin();
+        allow list: if isOwner(uid) || isAdmin();
+        allow update: if isOwner(uid) && tripUpdateValid();
+        allow delete: if isOwner(uid);
+      }
+
+      /* ----- Subcollection: sessions (legacy/example) ----- */
+      match /sessions/{sessionId} {
+        allow create: if isOwner(uid)
+          && request.resource.data.keys().hasOnly(['createdAt','device','platform','lastSeen'])
+          && request.resource.data.createdAt is timestamp;
+        allow get, list: if isOwner(uid);
+        allow update: if isOwner(uid)
+          && request.resource.data.keys().hasOnly(['createdAt','device','platform','lastSeen'])
+          && request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if isOwner(uid);
+      }
+
+      /* ----- Subcollection: private/verification ----- */
+      match /private/verification {
+        allow create, update: if (isOwner(uid) || isAdmin()) && validVerificationShape();
+        allow get: if isOwner(uid) || isAdmin();
+        allow list: if isOwner(uid) || isAdmin();
+        allow delete: if isOwner(uid) || isAdmin();
+      }
+
+      /* ----- Subcollection: emergencyContacts ----- */
+      match /emergencyContacts/{contactId} {
+        allow create: if isOwner(uid)
+          && request.resource.data.keys().hasOnly(['phone','label','createdAt'])
+          && request.resource.data.phone is string
+          && request.resource.data.createdAt is timestamp;
+
+        allow get, list: if isOwner(uid) || isAdmin();
+
+        allow update: if isOwner(uid)
+          && request.resource.data.keys().hasOnly(['phone','label','createdAt'])
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.phone is string;
+
+        allow delete: if isOwner(uid);
+      }
+    }
+
+    /* ---------- TOP-LEVEL: liveTrackingSessions ---------- */
+    function validSessionKeys() {
+      return [
+        'userId',
+        'startedAt',
+        'endsAt',
+        'active',
+        'durationMinutes',
+        'contacts',
+        'shareUrl',
+        'lastLocation',
+        'risk',
+        'createdAt',
+        'updatedAt'
+      ];
+    }
+
+    function sessionCreateValid() {
+      return (
+        request.resource.data.keys().hasOnly(validSessionKeys()) &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.startedAt is timestamp &&
+        request.resource.data.endsAt is timestamp &&
+        request.resource.data.active is bool &&
+        request.resource.data.durationMinutes is int &&
+        request.resource.data.contacts is list &&
+        request.resource.data.contacts.size() <= 5 &&
+        request.resource.data.shareUrl is string &&
+        (!('lastLocation' in request.resource.data) ||
+          (
+            request.resource.data.lastLocation is map &&
+            ('lat' in request.resource.data.lastLocation) &&
+            ('lng' in request.resource.data.lastLocation) &&
+            (request.resource.data.lastLocation.lat is number) &&
+            (request.resource.data.lastLocation.lng is number)
+          )
+        ) &&
+        (!('risk' in request.resource.data) || (request.resource.data.risk is map))
+      );
+    }
+
+    function sessionUpdateValid() {
+      return (
+        request.resource.data.keys().hasOnly(validSessionKeys()) &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.startedAt == resource.data.startedAt &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.durationMinutes is int &&
+        request.resource.data.contacts is list &&
+        request.resource.data.contacts.size() <= 5 &&
+        request.resource.data.shareUrl is string
+      );
+    }
+
+    match /liveTrackingSessions/{sessionId} {
+      allow create: if signedIn() && sessionCreateValid();
+      allow get: if signedIn() && (request.auth.uid == resource.data.userId || isAdmin());
+      allow list: if isAdmin();
+      allow update: if signedIn() && sessionUpdateValid() && request.auth.uid == resource.data.userId;
+      allow delete: if signedIn() && (request.auth.uid == resource.data.userId || isAdmin());
+    }
+  }
+}

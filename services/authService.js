@@ -1,27 +1,12 @@
 /**
- * authService.js (Modular Firebase SDK + serverTimestamp)
+ * authService.js
  *
- * This version:
- * - Uses modular Firebase imports (NO compat layer).
- * - Applies serverTimestamp() for createdAt / updatedAt.
- * - Restricts which profile fields can be updated by the client.
- * - Includes: register, login, logout, reauthenticate, changePassword, resetPassword,
- *   fetchSecureDigitalID, updateProfile.
- *
- * Prerequisites:
- *  - Your firebase config file (e.g. config/firebase.js) should export:
- *      import { initializeApp } from 'firebase/app';
- *      import { getAuth } from 'firebase/auth';
- *      import { getFirestore, enableMultiTabIndexedDbPersistence } from 'firebase/firestore';
- *      ...
- *      export const app = initializeApp(firebaseConfig);
- *      export const auth = getAuth(app);
- *      export const db = getFirestore(app);
- *      enableMultiTabIndexedDbPersistence(db).catch(()=>{});
- *
- *  - APP_CONSTANTS.COLLECTIONS.TOURISTS must be defined and equal to "tourists"
- *  - generateDigitalID(uid, fullName, nationality) should return:
- *        { id: string, hash: string, validUntil: ISOString }
+ * Updated for unified Trip Planner:
+ *  - Ensures collection = "tourists"
+ *  - Adds avatarUrl & currentTripId support (allowed mutable fields)
+ *  - Adds fetchProfile() helper used by AuthContext
+ *  - Uses serverTimestamp() for createdAt / updatedAt
+ *  - Keeps digital ID generation logic
  */
 
 import {
@@ -74,6 +59,16 @@ class AuthService {
   }
 
   /**
+   * Helper: fetch a profile doc (safe) by UID.
+   */
+  async fetchProfile(uid) {
+    const touristsColl = APP_CONSTANTS.COLLECTIONS.TOURISTS || 'tourists';
+    const ref = doc(db, touristsColl, uid);
+    const snap = await getDoc(ref);
+    return snap.exists() ? snap.data() : null;
+  }
+
+  /**
    * REGISTER
    * Creates Firebase Auth user + Firestore profile doc with immutable digital ID fields.
    */
@@ -93,11 +88,9 @@ class AuthService {
     try {
       stamp('start');
 
-      // Create auth user
       const credential = await createUserWithEmailAndPassword(auth, email, password);
       stamp('createdUser');
 
-      // Update displayName (non-fatal if fails)
       try {
         await fbUpdateProfile(credential.user, { displayName: fullName });
         stamp('updatedDisplayName');
@@ -105,7 +98,6 @@ class AuthService {
         console.warn('[AuthService.register] updateProfile failed', e);
       }
 
-      // Generate digital ID (fallback if fails)
       let digital;
       try {
         digital = await generateDigitalID(credential.user.uid, fullName, nationality);
@@ -114,15 +106,14 @@ class AuthService {
         console.warn('[AuthService.register] digital ID generation failed -> fallback', e);
         digital = {
           id: `FALLBACK-${Date.now().toString(36).toUpperCase()}`,
-          hash: 'FALLBACK',
+            hash: 'FALLBACK',
           validUntil: new Date(Date.now() + 180 * 24 * 3600 * 1000).toISOString()
         };
       }
 
-      const touristsColl = APP_CONSTANTS.COLLECTIONS.TOURISTS;
+      const touristsColl = APP_CONSTANTS.COLLECTIONS.TOURISTS || 'tourists';
       const userDocRef = doc(db, touristsColl, credential.user.uid);
 
-      // Firestore profile document (serverTimestamp for createdAt/updatedAt)
       const nowISO = new Date().toISOString();
       const profileDoc = {
         uid: credential.user.uid,
@@ -136,9 +127,11 @@ class AuthService {
         digitalTouristID: digital.id,
         digitalIDHash: digital.hash,
         digitalIDValidUntil: digital.validUntil,
-        registrationDate: nowISO,          // Keep ISO for easy display
+        registrationDate: nowISO,
         lastLoginDate: nowISO,
         isActive: true,
+        avatarUrl: '',          // NEW (default empty)
+        currentTripId: null,    // NEW
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       };
@@ -172,10 +165,9 @@ class AuthService {
     try {
       const credential = await signInWithEmailAndPassword(auth, email, password);
 
-      const touristsColl = APP_CONSTANTS.COLLECTIONS.TOURISTS;
+      const touristsColl = APP_CONSTANTS.COLLECTIONS.TOURISTS || 'tourists';
       const userDocRef = doc(db, touristsColl, credential.user.uid);
 
-      // Update lastLoginDate (ISO + updatedAt serverTimestamp)
       try {
         await updateDoc(userDocRef, {
           lastLoginDate: new Date().toISOString(),
@@ -185,7 +177,6 @@ class AuthService {
         console.warn('[AuthService.login] Failed to update lastLoginDate', e);
       }
 
-      // Fetch profile
       let profileData = null;
       try {
         const snap = await getDoc(userDocRef);
@@ -222,7 +213,7 @@ class AuthService {
    * FETCH SECURE DIGITAL ID (only the locked fields)
    */
   async fetchSecureDigitalID(uid) {
-    const touristsColl = APP_CONSTANTS.COLLECTIONS.TOURISTS;
+    const touristsColl = APP_CONSTANTS.COLLECTIONS.TOURISTS || 'tourists';
     const userDocRef = doc(db, touristsColl, uid);
     const snap = await getDoc(userDocRef);
     if (!snap.exists()) throw new Error('Profile not found');
@@ -235,7 +226,9 @@ class AuthService {
   }
 
   /**
-   * UPDATE PROFILE (only allowed mutable fields)
+   * UPDATE PROFILE
+   * Extends allowed fields to include avatarUrl & currentTripId (for unified trip planner).
+   * currentTripId is optional and can be reset to null.
    */
   async updateProfile(partial) {
     if (!auth.currentUser?.uid) throw new Error('Not authenticated');
@@ -246,8 +239,11 @@ class AuthService {
       'nationality',
       'passportNumber',
       'emergencyContact',
-      'emergencyPhone'
+      'emergencyPhone',
+      'avatarUrl',        // NEW
+      'currentTripId'     // NEW
     ];
+
     const update = {};
     allowed.forEach(k => {
       if (Object.prototype.hasOwnProperty.call(partial, k)) {
@@ -259,7 +255,14 @@ class AuthService {
       throw new Error('No valid fields to update');
     }
 
-    // Update displayName if fullName present
+    // Optional light validation
+    if ('currentTripId' in update && update.currentTripId !== null && typeof update.currentTripId !== 'string') {
+      throw new Error('currentTripId must be a string or null');
+    }
+    if ('avatarUrl' in update && update.avatarUrl && typeof update.avatarUrl !== 'string') {
+      throw new Error('avatarUrl must be a string');
+    }
+
     if (update.fullName) {
       try {
         await fbUpdateProfile(auth.currentUser, { displayName: update.fullName });
@@ -270,7 +273,7 @@ class AuthService {
 
     update.updatedAt = serverTimestamp();
 
-    const touristsColl = APP_CONSTANTS.COLLECTIONS.TOURISTS;
+    const touristsColl = APP_CONSTANTS.COLLECTIONS.TOURISTS || 'tourists';
     const userDocRef = doc(db, touristsColl, auth.currentUser.uid);
 
     try {
@@ -280,7 +283,6 @@ class AuthService {
       throw new Error(mapError(e));
     }
 
-    // Return fresh snapshot
     try {
       const snap = await getDoc(userDocRef);
       if (snap.exists()) {
@@ -294,7 +296,7 @@ class AuthService {
   }
 
   /**
-   * CHANGE PASSWORD (reauthorizes with current password first)
+   * CHANGE PASSWORD
    */
   async changePassword(currentPwd, newPwd) {
     if (!auth.currentUser) throw new Error('No authenticated user');
@@ -308,7 +310,7 @@ class AuthService {
   }
 
   /**
-   * RESET PASSWORD (sends email)
+   * RESET PASSWORD
    */
   async resetPassword(email) {
     if (!email) throw new Error('Email required');

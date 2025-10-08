@@ -3,9 +3,10 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 
 import HomeScreen from '../screens/HomeScreen';
+import TripsScreen from '../screens/TripsScreen';
 import ProfileScreen from '../screens/ProfileScreen';
-// Future placeholders
-const Placeholder = () => null;
+
+const ExplorePlaceholder = () => null;
 
 const Tab = createBottomTabNavigator();
 
@@ -34,10 +35,10 @@ export default function MainTabs() {
         }
       })}
     >
-      <Tab.Screen name="Home" component={HomeScreen}/>
-      <Tab.Screen name="Trips" component={Placeholder}/>
-      <Tab.Screen name="Explore" component={Placeholder}/>
-      <Tab.Screen name="Profile" component={ProfileScreen}/>
+      <Tab.Screen name="Home" component={HomeScreen} />
+      <Tab.Screen name="Trips" component={TripsScreen} />
+      <Tab.Screen name="Explore" component={ExplorePlaceholder} />
+      <Tab.Screen name="Profile" component={ProfileScreen} />
     </Tab.Navigator>
   );
 }

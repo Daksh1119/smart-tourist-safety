@@ -79,21 +79,21 @@ const FormInput = memo(function FormInput({
         />
         <TextInput
           ref={inputRef}
-          style={styles.input}
-          placeholder={placeholder}
-          placeholderTextColor="rgba(255,255,255,0.6)"
-          value={value}
-          onChangeText={onChangeText}
-          secureTextEntry={secureTextEntry}
-          keyboardType={keyboardType}
-          autoCapitalize={autoCapitalize}
-          autoCorrect={false}
-          autoComplete={autoComplete}
-          textContentType={textContentType}
-          returnKeyType={returnKeyType}
-          onSubmitEditing={onSubmitEditing}
-          importantForAutofill="yes"
-          accessibilityLabel={placeholder}
+            style={styles.input}
+            placeholder={placeholder}
+            placeholderTextColor="rgba(255,255,255,0.6)"
+            value={value}
+            onChangeText={onChangeText}
+            secureTextEntry={secureTextEntry}
+            keyboardType={keyboardType}
+            autoCapitalize={autoCapitalize}
+            autoCorrect={false}
+            autoComplete={autoComplete}
+            textContentType={textContentType}
+            returnKeyType={returnKeyType}
+            onSubmitEditing={onSubmitEditing}
+            importantForAutofill="yes"
+            accessibilityLabel={placeholder}
         />
         {showToggle && (
           <TouchableOpacity
@@ -272,9 +272,8 @@ export default function RegisterScreen({ navigation }) {
         emergencyContact: '',
         emergencyPhone: ''
       });
-      // Success: navigation / auth state change handled elsewhere. Do not alert here.
+      // AuthContext will redirect automatically
     } catch (e) {
-      // Only alert genuine failures (mapped upstream)
       Alert.alert('Registration Failed', e.message || 'Unable to create account.');
     } finally {
       setSubmitting(false);
@@ -320,7 +319,7 @@ export default function RegisterScreen({ navigation }) {
           showsVerticalScrollIndicator={false}
         >
           {/* Back Button */}
-            <TouchableOpacity
+          <TouchableOpacity
             style={styles.backButton}
             onPress={() => navigation.goBack()}
             accessibilityLabel="Go back to login"
@@ -570,9 +569,9 @@ export default function RegisterScreen({ navigation }) {
 
               {/* Divider */}
               <View style={styles.dividerContainer}>
-                <View className="dividerLine" style={styles.dividerLine} />
+                <View style={styles.dividerLine} />
                 <Text style={styles.dividerText}>OR SIGN UP WITH</Text>
-                <View className="dividerLine" style={styles.dividerLine} />
+                <View style={styles.dividerLine} />
               </View>
 
               {/* Social buttons (placeholders) */}

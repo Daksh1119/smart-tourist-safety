@@ -34,7 +34,7 @@ const APP_NAME = 'Smart Tourist Safety';
 const SLUG = 'smart-tourist-safety';
 const CUSTOM_SCHEME = 'tourtravel';
 
-/* ---------- Env Vars ---------- */
+/* ---------- Env Vars (Public) ---------- */
 const GOOGLE_WEB_CLIENT_ID = readEnv('EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID', { required: true });
 const FIREBASE_API_KEY = readEnv('EXPO_PUBLIC_FIREBASE_API_KEY', { required: true });
 const FIREBASE_AUTH_DOMAIN = readEnv('EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN', { required: true });
@@ -44,6 +44,10 @@ const FIREBASE_STORAGE_BUCKET = readEnv('EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET', {
 const FIREBASE_MESSAGING_SENDER_ID = readEnv('EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID', { required: true });
 const GOOGLE_IOS_CLIENT_ID = readEnv('EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID');
 const GOOGLE_ANDROID_CLIENT_ID = readEnv('EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID');
+
+/* Optional API / feature flags */
+const ML_API_URL = readEnv('EXPO_PUBLIC_ML_API_URL', { allowPlaceholder: true }) || 'http://192.168.27.205:5000';
+const DEV_TOOLS_FLAG = readEnv('EXPO_PUBLIC_DEV_TOOLS', { allowPlaceholder: true }) || 'true'; // string form
 
 if (!splashImage) {
   console.warn('[app.config.js] WARNING: No splash image found. Add assets/splash.png or assets/splash-icon.png.');
@@ -79,6 +83,19 @@ export default {
     ios: {
       bundleIdentifier: 'com.yourcompany.tourtravel',
       supportsTablet: true,
+      /**
+       * Add explicit location usage strings + background modes
+       * Needed for continuous / background tracking (Live Tracking + BG task)
+       */
+      infoPlist: {
+        NSLocationWhenInUseUsageDescription:
+          'This app needs location access to show your position and provide safety alerts.',
+        NSLocationAlwaysAndWhenInUseUsageDescription:
+          'Allow background location so the app can continue sharing your live position for safety tracking.',
+        NSLocationAlwaysUsageDescription:
+          'Always-on location powers emergency monitoring and live tracking sessions.',
+        UIBackgroundModes: ['location', 'processing']
+      },
     },
     android: {
       package: 'com.yourcompany.tourtravel',
@@ -86,7 +103,10 @@ export default {
         foregroundImage: './assets/adaptive-icon.png',
         backgroundColor: '#FFFFFF',
       },
-      // Permissions merged from old app.json (correct place is here)
+      /**
+       * Added ACCESS_BACKGROUND_LOCATION already; keep original plus foreground service support.
+       * (Expo will automatically handle the notification via startLocationUpdatesAsync foregroundService)
+       */
       permissions: [
         'CAMERA',
         'RECORD_AUDIO',
@@ -95,17 +115,16 @@ export default {
         'ACCESS_BACKGROUND_LOCATION',
         'READ_EXTERNAL_STORAGE',
         'WRITE_EXTERNAL_STORAGE',
-        'ACCESS_MEDIA_LOCATION'
+        'ACCESS_MEDIA_LOCATION',
+        'FOREGROUND_SERVICE'
       ],
-      // (Optional) new arch if you want
-      // newArchEnabled: true,
     },
     web: {
       bundler: 'metro',
       favicon: './assets/favicon.png',
     },
 
-    /* ---------- Plugins (migrated from teammate's app.json) ---------- */
+    /* ---------- Plugins (extended) ---------- */
     plugins: [
       [
         'expo-camera',
@@ -121,13 +140,20 @@ export default {
             'This app needs microphone access to record emergency audio for your safety.',
         },
       ],
+      /**
+       * Enhanced expo-location plugin config:
+       * - Provide custom permission strings (kept)
+       * - Enable background on both platforms for BG task usage
+       */
       [
         'expo-location',
         {
           locationForegroundPermission:
             'This app needs location access to track your position during emergencies.',
           locationBackgroundPermission:
-            'This app needs background location access to continuously track your position during panic mode.',
+            'This app needs background location access to continuously track your position during panic or live tracking mode.',
+          isAndroidBackgroundLocationEnabled: true,
+          isIosBackgroundLocationEnabled: true
         },
       ],
       [
@@ -141,7 +167,7 @@ export default {
       ],
     ],
 
-    /* ---------- Extra Runtime Config ---------- */
+    /* ---------- Extra Runtime Config (unchanged + additions) ---------- */
     extra: {
       firebase: {
         apiKey: FIREBASE_API_KEY,
@@ -156,6 +182,8 @@ export default {
         iosClientId: GOOGLE_IOS_CLIENT_ID,
         androidClientId: GOOGLE_ANDROID_CLIENT_ID,
       },
+      mlApiUrl: ML_API_URL,
+      DEV_TOOLS: DEV_TOOLS_FLAG === 'true',
     },
 
     privacy: 'public',
@@ -165,5 +193,10 @@ export default {
         'https://auth.expo.dev/@daksh1105/smart-tourist-safety',
       ],
     },
+
+    /**
+     * (Optional) future updates channel / OTA config
+     * updates: { url: '...', enabled: true }
+     */
   },
 };

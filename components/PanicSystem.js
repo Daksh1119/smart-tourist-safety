@@ -1,7 +1,12 @@
+// Updated PanicSystem.js
+// - Keeps the original layout, labels, and behavior.
+// - Adds defensive guards, better cleanup, and optional-safe defaults so it never crashes if props are missing.
+// - Prevents multiple concurrent timers/recordings and only starts features when allowed.
+
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, Modal, TouchableOpacity, StyleSheet,
-  Alert, ActivityIndicator, Animated
+  Alert, ActivityIndicator, Animated, Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -10,7 +15,13 @@ import * as FileSystem from 'expo-file-system';
 import { Audio } from 'expo-av';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const PanicSystem = ({ visible, onClose }) => {
+const PanicSystem = ({
+  visible,
+  onClose,
+  // Optional external lists (kept for future extension). If provided, we render them safely.
+  actions,   // [{ key, label, icon, onPress }]
+  contacts,  // [{ name, phone }]
+}) => {
   const [isActivated, setIsActivated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
@@ -28,6 +39,7 @@ const PanicSystem = ({ visible, onClose }) => {
   const recordingRef = useRef(null);
   const locationIntervalRef = useRef(null);
   const countdownIntervalRef = useRef(null);
+  const stopRecordingTimeoutRef = useRef(null); // NEW: to clear 30s timeout if stopping early
 
   const modalScale = useRef(new Animated.Value(0)).current;
   const pulse = useRef(new Animated.Value(1)).current;
@@ -38,7 +50,7 @@ const PanicSystem = ({ visible, onClose }) => {
         toValue: 1,
         useNativeDriver: true,
         tension: 90,
-        friction: 10
+        friction: 10,
       }).start();
       requestPermissions();
     } else {
@@ -59,9 +71,11 @@ const PanicSystem = ({ visible, onClose }) => {
 
   useEffect(() => {
     return () => {
+      // Cleanup on unmount
       stopLocationTracking();
       stopAudioRecording();
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+      if (stopRecordingTimeoutRef.current) clearTimeout(stopRecordingTimeoutRef.current);
     };
   }, []);
 
@@ -70,46 +84,53 @@ const PanicSystem = ({ visible, onClose }) => {
       setIsLoading(true);
       setLoadingMessage('Requesting permissions...');
       const loc = await Location.requestForegroundPermissionsAsync();
+      // Some SDKs return {granted:boolean, status:string}; support both
+      const locGranted = loc?.granted || loc?.status === 'granted';
+
       const aud = await Audio.requestPermissionsAsync();
-      setPermissions({
-        location: loc.status === 'granted',
-        audio: aud.status === 'granted',
-      });
-      setIsLoading(false);
-      setLoadingMessage('');
+      const audGranted = aud?.granted || aud?.status === 'granted';
+
+      setPermissions({ location: !!locGranted, audio: !!audGranted });
     } catch (e) {
       console.error('[PanicSystem] permission error', e);
+      Alert.alert('Permission Error', 'Could not request permissions.');
+    } finally {
       setIsLoading(false);
       setLoadingMessage('');
-      Alert.alert('Permission Error', 'Could not request permissions.');
     }
   };
 
   const ensureDir = async () => {
     const dir = `${FileSystem.documentDirectory}panic_files/`;
-    const info = await FileSystem.getInfoAsync(dir);
-    if (!info.exists)
-      await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-    return dir;
+    try {
+      const info = await FileSystem.getInfoAsync(dir);
+      if (!info.exists) {
+        await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+      }
+      return dir;
+    } catch (e) {
+      console.warn('ensureDir error', e);
+      return FileSystem.documentDirectory || '';
+    }
   };
 
   const getLocation = async () => {
     if (!permissions.location) return null;
     try {
       const loc = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High
+        accuracy: Location.Accuracy.High,
       });
       return {
         latitude: loc.coords.latitude,
         longitude: loc.coords.longitude,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
     } catch {
       return {
         latitude: 19.0760,
         longitude: 72.8777,
         timestamp: new Date().toISOString(),
-        error: 'Fallback location'
+        error: 'Fallback location',
       };
     }
   };
@@ -128,7 +149,7 @@ const PanicSystem = ({ visible, onClose }) => {
   };
 
   const startLocationTracking = async () => {
-    if (!permissions.location) return;
+    if (!permissions.location || locationIntervalRef.current) return;
     setLocationTracking(true);
     const store = [];
     const first = await getLocation();
@@ -150,74 +171,81 @@ const PanicSystem = ({ visible, onClose }) => {
   };
 
   const startAudioRecording = async () => {
-    if (!permissions.audio) return;
-    setAudioRecording(true);
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS: true,
-      playsInSilentModeIOS: true,
-    });
-    const dir = await ensureDir();
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    const filePath = `${dir}panic_audio_${ts}.m4a`;
+    if (!permissions.audio || recordingRef.current) return;
+    try {
+      setAudioRecording(true);
 
-    const { recording } = await Audio.Recording.createAsync({
-      android: {
-        extension: '.m4a',
-        outputFormat: Audio.RECORDING_OPTION_ANDROID_OUTPUT_FORMAT_MPEG_4,
-        audioEncoder: Audio.RECORDING_OPTION_ANDROID_AUDIO_ENCODER_AAC,
-        sampleRate: 44100,
-        numberOfChannels: 2,
-        bitRate: 128000,
-      },
-      ios: {
-        extension: '.m4a',
-        outputFormat: Audio.RECORDING_OPTION_IOS_OUTPUT_FORMAT_MPEG4AAC,
-        audioQuality: Audio.RECORDING_OPTION_IOS_AUDIO_QUALITY_HIGH,
-        sampleRate: 44100,
-        numberOfChannels: 2,
-        bitRate: 128000,
-        linearPCMBitDepth: 16,
-        linearPCMIsBigEndian: false,
-        linearPCMIsFloat: false,
-      },
-      web: { mimeType: 'audio/webm', bitsPerSecond: 128000 },
-    });
-    recordingRef.current = recording;
+      // iOS requires mode set for recording
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: true,
+        interruptionModeIOS: Audio.INTERRUPTION_MODE_IOS_DO_NOT_MIX,
+        shouldDuckAndroid: true,
+        interruptionModeAndroid: Audio.INTERRUPTION_MODE_ANDROID_DO_NOT_MIX,
+      });
 
-    setTimeout(async () => {
-      try {
-        if (recordingRef.current) {
-          await recordingRef.current.stopAndUnloadAsync();
-          const uri = recordingRef.current.getURI();
-          if (uri) {
-            await FileSystem.moveAsync({ from: uri, to: filePath });
+      const dir = await ensureDir();
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const filePath = `${dir}panic_audio_${ts}.m4a`;
+
+      // Use a high-quality preset for reliability across devices
+      const rec = new Audio.Recording();
+      await rec.prepareToRecordAsync(Audio.RECORDING_OPTIONS_PRESET_HIGH_QUALITY);
+      await rec.startAsync();
+      recordingRef.current = rec;
+
+      // Stop automatically after 30s and persist file
+      stopRecordingTimeoutRef.current = setTimeout(async () => {
+        try {
+          if (recordingRef.current) {
+            await recordingRef.current.stopAndUnloadAsync();
+            const uri = recordingRef.current.getURI();
+            if (uri) {
+              // Move to our directory with stable name
+              await FileSystem.moveAsync({ from: uri, to: filePath });
+            }
+            recordingRef.current = null;
           }
-          recordingRef.current = null;
+        } catch (e) {
+          console.warn('autoStop recording error', e);
+        } finally {
           setAudioRecording(false);
+          stopRecordingTimeoutRef.current = null;
         }
-      } catch {
-        setAudioRecording(false);
-      }
-    }, 30000);
+      }, 30000);
+    } catch (e) {
+      console.warn('startAudioRecording error', e);
+      setAudioRecording(false);
+    }
   };
 
   const stopAudioRecording = async () => {
     try {
+      if (stopRecordingTimeoutRef.current) {
+        clearTimeout(stopRecordingTimeoutRef.current);
+        stopRecordingTimeoutRef.current = null;
+      }
       if (recordingRef.current) {
         await recordingRef.current.stopAndUnloadAsync();
         recordingRef.current = null;
       }
+    } catch (e) {
+      // ignore
+    } finally {
       setAudioRecording(false);
-    } catch {}
+    }
   };
 
   const startCountdown = () => {
+    if (countdownIntervalRef.current || isActivated) return;
     setShowCountdown(true);
     setCountdown(5);
     countdownIntervalRef.current = setInterval(() => {
-      setCountdown(prev => {
+      setCountdown((prev) => {
         if (prev <= 1) {
           clearInterval(countdownIntervalRef.current);
+          countdownIntervalRef.current = null;
           activate();
           return 0;
         }
@@ -227,11 +255,13 @@ const PanicSystem = ({ visible, onClose }) => {
   };
 
   const activate = async () => {
+    if (isActivated) return;
     setIsLoading(true);
     setLoadingMessage('Activating panic mode...');
     setShowCountdown(false);
     setIsActivated(true);
-    await Promise.all([
+
+    await Promise.allSettled([
       startLocationTracking(),
       startAudioRecording(),
     ]);
@@ -242,9 +272,14 @@ const PanicSystem = ({ visible, onClose }) => {
       features: {
         locationTracking: true,
         audioRecording: true,
-      }
+      },
+      platform: Platform.OS,
     };
-    await AsyncStorage.setItem('currentPanicSession', JSON.stringify(session));
+    try {
+      await AsyncStorage.setItem('currentPanicSession', JSON.stringify(session));
+    } catch (e) {
+      console.warn('AsyncStorage set error', e);
+    }
 
     setIsLoading(false);
     setLoadingMessage('');
@@ -260,22 +295,36 @@ const PanicSystem = ({ visible, onClose }) => {
     setLoadingMessage('Stopping panic mode...');
     stopLocationTracking();
     await stopAudioRecording();
-    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
-    await AsyncStorage.removeItem('currentPanicSession');
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    try {
+      await AsyncStorage.removeItem('currentPanicSession');
+    } catch (e) {
+      console.warn('AsyncStorage remove error', e);
+    }
     setIsLoading(false);
     setLoadingMessage('');
     setIsActivated(false);
     setShowCountdown(false);
     setCountdown(5);
     Alert.alert('Panic Mode Stopped', 'Emergency features disabled.');
-    onClose();
+    onClose && onClose();
   };
 
   const cancelCountdown = () => {
-    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
     setShowCountdown(false);
     setCountdown(5);
   };
+
+  // Safe optional external content (won’t crash if undefined)
+  const safeActions = Array.isArray(actions) ? actions : null;
+  const safeContacts = Array.isArray(contacts) ? contacts : null;
 
   const renderPermissionStatus = () => {
     const items = [
@@ -334,6 +383,34 @@ const PanicSystem = ({ visible, onClose }) => {
             />
           </View>
         ))}
+
+        {/* Optional external lists rendered safely if provided */}
+        {safeActions && safeActions.length > 0 && (
+          <View style={{ marginTop: 10 }}>
+            <Text style={styles.statusTitle}>Quick Actions</Text>
+            {safeActions.map(a => (
+              <TouchableOpacity key={a.key} onPress={a.onPress} style={styles.statusItem}>
+                <Ionicons name={a.icon || 'flash'} size={16} color="#fff" />
+                <Text style={[styles.statusText, { color: '#fff' }]}>{a.label}</Text>
+                <Ionicons name="chevron-forward" size={16} color="#fff" />
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
+        {safeContacts && safeContacts.length > 0 && (
+          <View style={{ marginTop: 10 }}>
+            <Text style={styles.statusTitle}>Emergency Contacts</Text>
+            {safeContacts.map((c, idx) => (
+              <View key={`${c?.name || 'contact'}-${idx}`} style={styles.statusItem}>
+                <Ionicons name="person" size={16} color="#fff" />
+                <Text style={[styles.statusText, { color: '#fff' }]}>
+                  {(c?.name || 'Contact')}{c?.phone ? ` • ${c.phone}` : ''}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
       </View>
     );
   };
@@ -345,7 +422,7 @@ const PanicSystem = ({ visible, onClose }) => {
       animationType="fade"
       statusBarTranslucent
       onRequestClose={() => {
-        if (!isActivated && !showCountdown) onClose();
+        if (!isActivated && !showCountdown) onClose && onClose();
         else Alert.alert('Active', 'Stop panic mode first.');
       }}
     >
@@ -401,7 +478,7 @@ const PanicSystem = ({ visible, onClose }) => {
                   <View style={styles.buttonRow}>
                     <TouchableOpacity
                       style={styles.cancelButton}
-                      onPress={onClose}
+                      onPress={() => onClose && onClose()}
                     >
                       <Text style={styles.cancelButtonText}>Cancel</Text>
                     </TouchableOpacity>

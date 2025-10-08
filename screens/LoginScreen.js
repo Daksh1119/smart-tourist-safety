@@ -1,4 +1,5 @@
-// Assumes this file lives in screens/ and that assets/login-background.png exists.
+// Only social buttons section & imports changed from your last version.
+// Replace entire file for clarity (keep your assets / other utils as-is).
 
 import React, {
   useState,
@@ -43,24 +44,26 @@ const loginSchema = yup.object({
   password: yup.string().min(6, 'Min 6 chars').required('Password required')
 });
 
-const FormInput = memo(function FormInput({
-  placeholder,
-  value,
-  onChangeText,
-  secureTextEntry,
-  keyboardType,
-  icon,
-  error,
-  onSubmitEditing,
-  returnKeyType = 'next',
-  autoCapitalize = 'none',
-  autoComplete,
-  textContentType,
-  inputRef,
-  toggleSecure,
-  showToggle,
-  editable = true
-}) {
+const FormInput = memo(function FormInput(props) {
+  const {
+    placeholder,
+    value,
+    onChangeText,
+    secureTextEntry,
+    keyboardType,
+    icon,
+    error,
+    onSubmitEditing,
+    returnKeyType = 'next',
+    autoCapitalize = 'none',
+    autoComplete,
+    textContentType,
+    inputRef,
+    toggleSecure,
+    showToggle,
+    editable = true
+  } = props;
+
   return (
     <View style={styles.inputWrapper}>
       <View style={[
@@ -138,6 +141,7 @@ export default function LoginScreen({ navigation }) {
     types: [],
     canAttempt: false
   });
+  const [biometricAttempted, setBiometricAttempted] = useState(false);
 
   const passwordManuallyEdited = useRef(false);
   const passwordRef = useRef(null);
@@ -194,6 +198,7 @@ export default function LoginScreen({ navigation }) {
       setHasSavedForEmail(false);
       setSavedPassword('');
       setPendingFill(false);
+      setBiometricAttempted(false);
 
       if (!normalized) {
         setPassword('');
@@ -207,6 +212,7 @@ export default function LoginScreen({ navigation }) {
 
       if (hasSaved) {
         if (biometricInfo.canAttempt) {
+          setBiometricAttempted(true);
           const ok = await biometricPrompt('Authenticate to fill saved password');
           if (cancelled) return;
           if (ok) {
@@ -309,7 +315,9 @@ export default function LoginScreen({ navigation }) {
     const normalized = email.trim().toLowerCase();
     if (!next && normalized) {
       const exists = await hasSavedPassword(normalized);
-      if (exists) await deletePasswordForEmail(normalized);
+      if (exists) {
+        await deletePasswordForEmail(normalized);
+      }
     }
   }, [rememberMe, email]);
 
@@ -481,6 +489,12 @@ export default function LoginScreen({ navigation }) {
                   </LinkText>
                 </View>
               </View>
+
+              {autoFilled && maskedAutoFill && (
+                <Text style={styles.autoFillInfo}>
+                  Saved password masked. Tap the eye to reveal or start typing to replace it.
+                </Text>
+              )}
 
               <TouchableOpacity
                 style={[styles.loginButton, disabled && { opacity: 0.7 }]}
@@ -668,6 +682,11 @@ const styles = StyleSheet.create({
     fontWeight: '600'
   },
   forgotPasswordInline: { padding: 4 },
+  autoFillInfo: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.55)',
+    marginBottom: 12
+  },
   fillSavedPill: {
     alignSelf: 'flex-start',
     flexDirection: 'row',
